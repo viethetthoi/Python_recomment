@@ -112,7 +112,7 @@ def get_user_recommendations():
 
         recommended_tours = pd.concat([tours_with_rating, tours_without_rating]).head(4)
         result = recommended_tours[['tourId']].to_dict(orient='records')
-
+        print(result)
         return jsonify({"recommended_tours": result})
 
     except Exception as e:
