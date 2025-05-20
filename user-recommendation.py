@@ -18,7 +18,7 @@ def create_connection():
         print("✅ Kết nối tới MySQL database thành công!")
         return engine
     except Error as e:
-        print(f"❌ Lỗi khi kết nối MySQL: {e}")
+        print(f"❌ Lỗi kchi kết nối MySQL: {e}")
         return None
 
 def close_connection(engine):
