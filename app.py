@@ -15,7 +15,12 @@ app = Flask(__name__)
 def create_connection():
     try:
         # engine = create_engine('mysql+mysqlconnector://root:@localhost/datn_tour')
-        engine = create_engine('mysql+mysqlconnector://root@localhost/datn_tour')
+        # engine = create_engine('mysql+mysqlconnector://root:@localhost/datn_tour')
+
+        engine = create_engine(
+            'mysql+mysqlconnector://vivutour_tour:voducviet2003@vi-vu-tour.pro.vn:3306/vivutour_datn_tour_new'
+        )
+
 
         print("✅ Kết nối tới MySQL database thành công!")
         return engine
