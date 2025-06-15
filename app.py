@@ -103,7 +103,7 @@ def get_user_recommendations():
         top_tours = candidate_tours.sort_values(by=['similarity', 'avg_rating'], ascending=[False, False]).head(4)
         result = top_tours[['tourId']].to_dict(orient='records')
 
-        print("✅ Xử lý recommendation mất:", round(time.time() - start, 2), "giây")
+        # print("✅ Xử lý recommendation mất:", round(time.time() - start, 2), "giây")
         return jsonify({"recommended_tours": result})
 
     except Exception as e:
