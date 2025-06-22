@@ -45,53 +45,53 @@ def get_user_recommendations():
         return jsonify({"error": "Database connection failed"}), 500
 
     try:
-        user_bookings = pd.read_sql("SELECT * FROM tbl_booking WHERE userId = %(user_id)s;", engine, params={"user_id": user_id})
-        user_reviews = pd.read_sql("SELECT * FROM tbl_reviews WHERE userId = %(user_id)s;", engine, params={"user_id": user_id})
-        all_tours = pd.read_sql("""
+        # 1. Lấy tất cả tour user đã từng đặt
+        user_bookings = pd.read_sql(
+            "SELECT DISTINCT tourId FROM tbl_booking WHERE userId = %(user_id)s;",
+            engine, params={"user_id": user_id}
+        )
+
+        if user_bookings.empty:
+            return jsonify({"recommended_tours": None, "message": "User has no booking history"}), 200
+
+        # 2. Lấy tất cả tour đang hoạt động
+        active_tours = pd.read_sql("""
             SELECT t.*, AVG(s.priceAdult) AS priceAdult
             FROM tbl_tour t
             LEFT JOIN tbl_start_end_date s ON t.tourId = s.tourId
+            WHERE t.acStatus = 'y'
             GROUP BY t.tourId
         """, engine)
 
-        if user_bookings.empty and user_reviews.empty:
-            return jsonify({"recommended_tours": None, "message": "No interaction history for user"}), 200
+        # 3. Tạo đặc trưng kết hợp
+        active_tours['combineFeatures'] = active_tours.apply(combine_features, axis=1)
 
-        interacted_tour_ids = pd.concat([
-            user_bookings['tourId'] if not user_bookings.empty else pd.Series(dtype=int),
-            user_reviews['tourId'] if not user_reviews.empty else pd.Series(dtype=int)
-        ]).unique()
-
-        candidate_tours = all_tours[~all_tours['tourId'].isin(interacted_tour_ids)].copy()
-        if candidate_tours.empty:
-            return jsonify({"message": "No tours available for recommendations."}), 404
-
-        all_tours['combineFeatures'] = all_tours.apply(combine_features, axis=1)
-        candidate_tours['combineFeatures'] = candidate_tours.apply(combine_features, axis=1)
-
+        # 4. Tính TF-IDF và cosine similarity
         tfidf = TfidfVectorizer(stop_words='english', ngram_range=(1, 2), max_df=0.85, min_df=2)
-        tfidf_matrix_all = tfidf.fit_transform(all_tours['combineFeatures'])
-        cosine_sim = cosine_similarity(tfidf_matrix_all, tfidf_matrix_all)
+        tfidf_matrix = tfidf.fit_transform(active_tours['combineFeatures'])
+        cosine_sim = cosine_similarity(tfidf_matrix, tfidf_matrix)
 
-        interacted_indices = all_tours[all_tours['tourId'].isin(interacted_tour_ids)].index.to_numpy()
-        candidate_indices = candidate_tours.index.to_numpy()
+        # 5. Lấy index các tour user đã đặt
+        booked_tour_ids = user_bookings['tourId'].tolist()
+        booked_indices = active_tours[active_tours['tourId'].isin(booked_tour_ids)].index.to_numpy()
 
-        sim_scores = cosine_sim[np.ix_(interacted_indices, candidate_indices)].mean(axis=0)
+        # 6. Lấy index candidate tours (chưa đặt)
+        candidate_indices = active_tours[~active_tours['tourId'].isin(booked_tour_ids)].index.to_numpy()
+
+        if len(booked_indices) == 0 or len(candidate_indices) == 0:
+            return jsonify({"message": "Not enough data to compute recommendations."}), 200
+
+        # 7. Tính điểm cosine similarity trung bình giữa các tour đã đặt và candidate tours
+        sim_scores = cosine_sim[np.ix_(booked_indices, candidate_indices)].mean(axis=0)
+
+        candidate_tours = active_tours.iloc[candidate_indices].copy()
         candidate_tours['similarity'] = sim_scores
 
-        all_reviews = pd.read_sql("SELECT * FROM tbl_reviews;", engine)
-        avg_rating = all_reviews.groupby('tourId')['rating'].mean().reset_index()
-        avg_rating.columns = ['tourId', 'avg_rating']
-
-        candidate_tours['tourId'] = candidate_tours['tourId'].astype('Int64')
-        avg_rating['tourId'] = avg_rating['tourId'].astype('Int64')
-        candidate_tours = pd.merge(candidate_tours, avg_rating, on='tourId', how='left')
-
-        mean_rating = avg_rating['avg_rating'].mean() if not avg_rating.empty else 3.0
-        candidate_tours['avg_rating'] = candidate_tours['avg_rating'].fillna(mean_rating)
-
-        candidate_tours = candidate_tours.sort_values(by=['similarity', 'avg_rating'], ascending=[False, False])
+        # 8. Lấy top 4 tour similarity cao nhất làm đề xuất
+        candidate_tours = candidate_tours.sort_values(by='similarity', ascending=False)
         recommended_tours = candidate_tours.head(4)
+
+        # 9. Trả về danh sách tourId
         result = recommended_tours[['tourId']].to_dict(orient='records')
 
         return jsonify({"recommended_tours": result})
@@ -101,6 +101,8 @@ def get_user_recommendations():
 
     finally:
         close_connection(engine)
+
+
 
 @app.route('/api/tour-recommendations', methods=['GET'])
 def get_tour_recommendations():
@@ -114,23 +116,31 @@ def get_tour_recommendations():
         return jsonify({"error": "Database connection failed"}), 500
 
     try:
+        # 1. Chỉ lấy các tour đang hoạt động (acStatus = 'y')
         all_tours = pd.read_sql("""
             SELECT t.*, AVG(s.priceAdult) AS priceAdult
             FROM tbl_tour t
             LEFT JOIN tbl_start_end_date s ON t.tourId = s.tourId
+            WHERE t.acStatus = 'y'
             GROUP BY t.tourId
         """, engine)
 
+        # 2. Kiểm tra tour có tồn tại không
         if tour_id not in all_tours['tourId'].values:
             return jsonify({"error": "Tour not found."}), 404
 
+        # 3. Tạo đặc trưng kết hợp
         all_tours['combineFeatures'] = all_tours.apply(combine_features, axis=1)
 
+        # 4. TF-IDF và cosine similarity
         tfidf = TfidfVectorizer(stop_words='english', ngram_range=(1, 2), max_df=0.85, min_df=2)
         tfidf_matrix = tfidf.fit_transform(all_tours['combineFeatures'])
         cosine_sim = cosine_similarity(tfidf_matrix, tfidf_matrix)
 
+        # 5. Lấy chỉ số của tour đầu vào
         tour_idx = all_tours[all_tours['tourId'] == tour_id].index[0]
+
+        # 6. Lấy top tour tương tự
         sim_scores = list(enumerate(cosine_sim[tour_idx]))
         sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
         top_similar_indices = [i for i, score in sim_scores if i != tour_idx][:10]
@@ -139,18 +149,8 @@ def get_tour_recommendations():
         similarities = [score for i, score in sim_scores if i in top_similar_indices]
         similar_tours['similarity'] = similarities
 
-        all_reviews = pd.read_sql("SELECT * FROM tbl_reviews;", engine)
-        avg_rating = all_reviews.groupby('tourId')['rating'].mean().reset_index()
-        avg_rating.columns = ['tourId', 'avg_rating']
-
-        similar_tours['tourId'] = similar_tours['tourId'].astype('Int64')
-        avg_rating['tourId'] = avg_rating['tourId'].astype('Int64')
-        similar_tours = pd.merge(similar_tours, avg_rating, on='tourId', how='left')
-
-        mean_rating = avg_rating['avg_rating'].mean() if not avg_rating.empty else 3.0
-        similar_tours['avg_rating'] = similar_tours['avg_rating'].fillna(mean_rating)
-
-        similar_tours = similar_tours.sort_values(by=['similarity', 'avg_rating'], ascending=[False, False])
+        # 7. Sắp xếp theo độ tương đồng và lấy top 4
+        similar_tours = similar_tours.sort_values(by='similarity', ascending=False)
         result = similar_tours[['tourId']].head(4).to_dict(orient='records')
 
         return jsonify({"recommended_tours": result})
@@ -160,6 +160,7 @@ def get_tour_recommendations():
 
     finally:
         close_connection(engine)
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5555, debug=True)
